@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth';
-import { createPayment, getDocumentaryById } from '@/lib/db';
+import { getDocumentaryById } from '@/lib/db';
+import { GATEWAY_METHODS, type GatewayMethod } from '@/lib/itecpay';
+import { PaymentStartError, startGatewayPayment } from '@/lib/payments';
+import { isValidPhone } from '@/lib/utils';
 import { PLANS } from '@/lib/types';
 
 export async function POST(request: NextRequest) {
@@ -15,7 +18,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { plan, documentaryId } = body;
+    const { plan, documentaryId, method, phone, email } = body;
 
     // Validate plan
     if (!plan) {
@@ -33,6 +36,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (!GATEWAY_METHODS.includes(method)) {
+      return NextResponse.json({ error: 'Choose a payment method' }, { status: 400 });
+    }
+
+    const payPhone = typeof phone === 'string' && phone.trim() ? phone.trim() : user.phone;
+    if (method !== 'card' && !isValidPhone(payPhone)) {
+      return NextResponse.json({ error: 'Enter a valid Rwandan phone number' }, { status: 400 });
+    }
+    if (method === 'card' && (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))) {
+      return NextResponse.json({ error: 'Enter a valid email address for the card receipt' }, { status: 400 });
+    }
+
     // For single documentary plan, documentaryId is required
     if (plan === 'single' && !documentaryId) {
       return NextResponse.json(
@@ -47,22 +62,29 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Create payment with server-determined amount
-    const paymentId = await createPayment({
-      userId: user.id,
-      phone: user.phone,
-      plan,
-      amount: selectedPlan.price,
-      documentaryId: documentaryId || undefined,
+    // Amount comes from the server's plan list, never from the client
+    const result = await startGatewayPayment({
+      user,
+      plan: selectedPlan,
+      documentaryId: plan === 'single' ? documentaryId : undefined,
+      method: method as GatewayMethod,
+      phone: payPhone,
+      email: typeof email === 'string' ? email.trim() : undefined,
+      siteUrl: process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, '') || request.nextUrl.origin,
     });
 
     return NextResponse.json({
       success: true,
-      paymentId,
+      reference: result.reference,
+      paymentUrl: result.paymentUrl,
+      method,
       plan: selectedPlan,
-      message: 'Payment created. Please upload your payment proof.',
+      message: result.message,
     });
   } catch (error) {
+    if (error instanceof PaymentStartError) {
+      return NextResponse.json({ error: error.message, reference: error.reference }, { status: 502 });
+    }
     console.error('Error creating payment:', error);
     return NextResponse.json(
       { error: 'Failed to create payment' },

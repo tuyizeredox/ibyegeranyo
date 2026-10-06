@@ -4,10 +4,8 @@ import {
   confirmPayment,
   rejectPayment,
   getPaymentById,
-  getUserById,
 } from "@/lib/db";
-import { sendWhatsAppTemplate } from "@/lib/whatsapp";
-import { PLANS } from "@/lib/types";
+import { isGatewayPayment, notifyPaymentApproved, reconcilePayment } from "@/lib/payments";
 
 export async function POST(request: NextRequest) {
   try {
@@ -31,6 +29,23 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === "confirm") {
+      const payment = await getPaymentById(paymentId);
+      if (!payment) {
+        return NextResponse.json({ error: "Payment not found" }, { status: 404 });
+      }
+
+      // Gateway payments are approved only if iTechPay confirms them.
+      if (isGatewayPayment(payment)) {
+        const result = await reconcilePayment(paymentId, "admin");
+        if (result.status !== "confirmed") {
+          return NextResponse.json(
+            { error: `iTechPay has not confirmed this payment (${result.detail || result.status})` },
+            { status: 400 }
+          );
+        }
+        return NextResponse.json({ success: true, message: "Payment verified and confirmed" });
+      }
+
       const result = await confirmPayment(paymentId, admin.id);
 
       if (!result.success) {
@@ -40,38 +55,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // ===== SEND WHATSAPP TEMPLATE =====
-      try {
-        const payment = await getPaymentById(paymentId);
-        if (payment) {
-          const user = await getUserById(payment.userId);
-          const plan = PLANS.find((p) => p.id === payment.plan);
-          const planName = plan?.name || payment.plan;
-          const expiresAt = payment.expiresAt
-            ? new Date(payment.expiresAt).toLocaleDateString("rw-RW")
-            : "—";
-
-          await sendWhatsAppTemplate({
-            to: payment.phone,
-            templateName: "payment_approved", // exact name of your template
-            languageCode: "rw",               // change to "en" if you chose English
-            components: [
-              {
-                type: "body",
-                parameters: [
-                  { type: "text", text: user?.fullName || "umukiriya" },
-                  { type: "text", text: planName },
-                  { type: "text", text: expiresAt },
-                ],
-              },
-            ],
-          });
-        }
-      } catch (waError) {
-        // Don't fail the approval if WhatsApp fails
-        console.error("WhatsApp notification failed:", waError);
-      }
-      // ==================================
+      if (!result.alreadyConfirmed) await notifyPaymentApproved(paymentId);
 
       return NextResponse.json({
         success: true,

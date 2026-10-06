@@ -1,6 +1,6 @@
 import { getDb, collections } from './firebase';
 import { generateId, calculateExpiryDate } from './utils';
-import type { Documentary, Payment, User, PlanType } from './types';
+import type { Documentary, Payment, PaymentMethod, User, PlanType } from './types';
 import { PLANS } from './types';
 
 // ==================== DOCUMENTARY OPERATIONS ====================
@@ -148,14 +148,17 @@ export async function addTrailerToDocumentary(
 // ==================== PAYMENT OPERATIONS ====================
 
 export async function createPayment(data: {
+  /** Pass the iTechPay `req_ref` so the payment can be found by it. */
+  id?: string;
   userId: string;
   phone: string;
   plan: PlanType;
   amount: number;
   documentaryId?: string;
+  method?: PaymentMethod;
 }): Promise<string> {
   const db = getDb();
-  const id = generateId();
+  const id = data.id || generateId();
   const now = new Date().toISOString();
   
   const payment: Omit<Payment, 'id'> = {
@@ -163,8 +166,13 @@ export async function createPayment(data: {
     phone: data.phone,
     plan: data.plan,
     amount: data.amount,
+    currency: 'RWF',
     documentaryId: data.documentaryId || null,
     status: 'pending',
+    method: data.method || 'manual',
+    gatewayTransactionId: null,
+    gatewayStatus: null,
+    needsReview: null,
     proofUrl: null,
     createdAt: now,
     confirmedAt: null,
@@ -173,7 +181,8 @@ export async function createPayment(data: {
     expiresAt: null,
   };
   
-  await db.collection(collections.payments).doc(id).set(payment);
+  // create() rather than set(): a reused id must never overwrite a payment.
+  await db.collection(collections.payments).doc(id).create(payment);
   
   // Update user with payment reference
   await db.collection(collections.users).doc(data.userId).update({
@@ -184,6 +193,38 @@ export async function createPayment(data: {
   });
   
   return id;
+}
+
+/** Stores what iTechPay last told us about a payment, without changing its status. */
+export async function updatePaymentGatewayInfo(
+  paymentId: string,
+  info: { gatewayTransactionId?: string | null; gatewayStatus?: string | null; needsReview?: string | null }
+): Promise<void> {
+  const db = getDb();
+  const update: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+  for (const [key, value] of Object.entries(info)) {
+    if (value !== undefined) update[key] = value;
+  }
+  await db.collection(collections.payments).doc(paymentId).update(update);
+}
+
+/** Marks a pending payment as failed. Does nothing if it is no longer pending. */
+export async function markPaymentFailed(paymentId: string, gatewayStatus?: string | null): Promise<void> {
+  const db = getDb();
+  const paymentRef = db.collection(collections.payments).doc(paymentId);
+  await db.runTransaction(async (tx) => {
+    const paymentDoc = await tx.get(paymentRef);
+    if (!paymentDoc.exists) return;
+    const payment = paymentDoc.data() as Payment;
+    if (payment.status !== 'pending') return;
+    const userRef = db.collection(collections.users).doc(payment.userId);
+    const userDoc = await tx.get(userRef);
+    const now = new Date().toISOString();
+    tx.update(paymentRef, { status: 'failed', gatewayStatus: gatewayStatus ?? payment.gatewayStatus ?? null, updatedAt: now });
+    if (userDoc.exists && (userDoc.data() as User).paymentId === paymentId) {
+      tx.update(userRef, { paymentStatus: 'failed', updatedAt: now });
+    }
+  });
 }
 
 export async function getPaymentById(id: string): Promise<Payment | null> {
@@ -230,74 +271,104 @@ export async function updatePaymentProof(
   });
 }
 
+/**
+ * Grants the access a payment paid for. Idempotent and transactional: the
+ * webhook, status polling, the account-page sweep, the cron job and admins can
+ * all call it for the same payment and access is granted exactly once.
+ *
+ * Renewals stack: a subscription bought while another is still running starts
+ * when the current one ends instead of discarding the remaining days.
+ */
+export async function activatePayment(
+  paymentId: string,
+  confirmedBy: string,
+  gateway?: { transactionId?: string | null; status?: string | null }
+): Promise<{ success: boolean; error?: string; alreadyConfirmed?: boolean }> {
+  const db = getDb();
+  const paymentRef = db.collection(collections.payments).doc(paymentId);
+
+  return db.runTransaction(async (tx) => {
+    const paymentDoc = await tx.get(paymentRef);
+    if (!paymentDoc.exists) {
+      return { success: false, error: 'Payment not found' };
+    }
+
+    const payment = paymentDoc.data() as Payment;
+    if (payment.status === 'confirmed') {
+      return { success: true, alreadyConfirmed: true };
+    }
+    // `failed` payments can still be activated: the gateway may confirm a
+    // payment after we stopped waiting for it, and the customer was charged.
+    if (payment.status === 'rejected') {
+      return { success: false, error: 'This payment was rejected' };
+    }
+
+    const plan = PLANS.find((p) => p.id === payment.plan);
+    if (!plan) {
+      return { success: false, error: 'Invalid plan' };
+    }
+
+    const userRef = db.collection(collections.users).doc(payment.userId);
+    const userDoc = await tx.get(userRef);
+    const user = userDoc.exists ? (userDoc.data() as User) : null;
+
+    const now = new Date();
+    const nowISO = now.toISOString();
+    const isSubscription = payment.plan !== 'single';
+    const currentExpiry = user?.expiresAt ? new Date(user.expiresAt) : null;
+    const renewing =
+      isSubscription &&
+      user?.subscriptionStatus === 'active' &&
+      user.selectedPlan !== 'single' &&
+      !!currentExpiry &&
+      currentExpiry > now;
+    const startDate = renewing ? currentExpiry! : now;
+    const expiryDate = calculateExpiryDate(startDate, plan.duration);
+
+    const paymentUpdate: Record<string, unknown> = {
+      status: 'confirmed',
+      confirmedAt: nowISO,
+      confirmedBy,
+      startDate: startDate.toISOString(),
+      expiresAt: expiryDate.toISOString(),
+      updatedAt: nowISO,
+    };
+    if (gateway?.transactionId) paymentUpdate.gatewayTransactionId = gateway.transactionId;
+    if (gateway?.status) paymentUpdate.gatewayStatus = gateway.status;
+    tx.update(paymentRef, paymentUpdate);
+
+    if (!user) return { success: true };
+
+    const userUpdate: Record<string, unknown> = { updatedAt: nowISO };
+    // Don't hide a newer pending payment behind an older one's confirmation.
+    if (!user.paymentId || user.paymentId === paymentId) userUpdate.paymentStatus = 'confirmed';
+
+    if (!isSubscription) {
+      // A single-documentary purchase is a scoped entitlement, not a
+      // subscription. Keep an existing full subscription intact.
+      const documentaryIds = user.documentaryIds || [];
+      if (payment.documentaryId && !documentaryIds.includes(payment.documentaryId)) {
+        userUpdate.documentaryIds = [...documentaryIds, payment.documentaryId];
+      }
+    } else {
+      userUpdate.subscriptionStatus = 'active';
+      userUpdate.selectedPlan = payment.plan;
+      if (!renewing) userUpdate.startDate = nowISO;
+      userUpdate.endDate = expiryDate.toISOString();
+      userUpdate.expiresAt = expiryDate.toISOString();
+    }
+
+    tx.update(userRef, userUpdate);
+    return { success: true };
+  });
+}
+
+/** Admin confirmation of a manual (USSD + screenshot) payment. */
 export async function confirmPayment(
   paymentId: string,
   adminId: string
-): Promise<{ success: boolean; error?: string }> {
-  const db = getDb();
-
-  // Get payment
-  const paymentDoc = await db.collection(collections.payments).doc(paymentId).get();
-
-  if (!paymentDoc.exists) {
-    return { success: false, error: 'Payment not found' };
-  }
-
-  const payment = paymentDoc.data() as Payment;
-  if (payment.status !== 'pending') {
-    return { success: false, error: 'This payment has already been processed' };
-  }
-
-  // Proof is optional — admin may confirm without one
-
-  // Get plan details
-  const plan = PLANS.find((p) => p.id === payment.plan);
-  if (!plan) {
-    return { success: false, error: 'Invalid plan' };
-  }
-
-  const now = new Date();
-  const nowISO = now.toISOString();
-  const expiryDate = calculateExpiryDate(now, plan.duration);
-
-  // Update payment
-  await db.collection(collections.payments).doc(paymentId).update({
-    status: 'confirmed',
-    confirmedAt: nowISO,
-    confirmedBy: adminId,
-    startDate: nowISO,
-    expiresAt: expiryDate.toISOString(),
-  });
-
-  // A single-documentary purchase is a scoped entitlement, not a subscription.
-  // Keep an existing full subscription intact when confirming one.
-  const userUpdate: Record<string, unknown> = {
-    paymentStatus: 'confirmed',
-    updatedAt: nowISO,
-  };
-
-  // For single documentary plan, add documentary to user's access list
-  if (payment.plan === 'single' && payment.documentaryId) {
-    const userDoc = await db.collection(collections.users).doc(payment.userId).get();
-    if (userDoc.exists) {
-      const userData = userDoc.data() as User;
-      const documentaryIds = userData.documentaryIds || [];
-      if (!documentaryIds.includes(payment.documentaryId)) {
-        documentaryIds.push(payment.documentaryId);
-        userUpdate.documentaryIds = documentaryIds;
-      }
-    }
-  } else {
-    userUpdate.subscriptionStatus = 'active';
-    userUpdate.selectedPlan = payment.plan;
-    userUpdate.startDate = nowISO;
-    userUpdate.endDate = expiryDate.toISOString();
-    userUpdate.expiresAt = expiryDate.toISOString();
-  }
-
-  await db.collection(collections.users).doc(payment.userId).update(userUpdate);
-
-  return { success: true };
+): Promise<{ success: boolean; error?: string; alreadyConfirmed?: boolean }> {
+  return activatePayment(paymentId, adminId);
 }
 
 export async function rejectPayment(paymentId: string): Promise<{ success: boolean; error?: string }> {

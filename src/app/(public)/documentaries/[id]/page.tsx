@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { getDocumentaryById } from '@/lib/db';
 import { getCurrentUser, checkDocumentaryAccess } from '@/lib/auth';
 import { DocumentaryDetail } from '@/components/DocumentaryDetail';
+import { getDocumentaryThumbnail } from '@/lib/thumbnails';
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -80,9 +81,10 @@ export default async function DocumentaryPage({ params }: PageProps) {
       };
 
   return (
-    <div className="min-h-screen pt-20">
+    <div className="min-h-screen">
       <DocumentaryDetail
         documentary={safeDocumentary}
+        thumbnail={getDocumentaryThumbnail(safeDocumentary)}
         hasAccess={access.hasAccess}
         accessReason={access.reason}
       />

@@ -1,4 +1,21 @@
 import type { Metadata } from 'next';
+import { PageHeader } from '@/components/PageHeader';
 import { PricingSection } from '@/components/PricingSection';
-export const metadata: Metadata = { title: 'Pricing | Aime Christian Documentaries', description: 'Choose flexible documentary access through MTN MoMo payment verification.', alternates: { canonical: '/pricing' } };
-export default function PricingPage() { return <div className="pt-16"><section className="container py-16 text-center"><p className="text-center text-gold font-semibold">MEMBERSHIP</p><h1 className="text-center font-[family-name:var(--font-fraunces)] text-5xl md:text-7xl">Stories worth staying for.</h1><div className="mt-5 flex w-full justify-center"><p className="w-fit max-w-full text-center text-text-muted">Pay with MTN MoMo, upload your proof, and receive access once an administrator verifies the payment.</p></div></section><PricingSection /></div>; }
+import { HowItWorks } from '@/components/HowItWorks';
+
+export const metadata: Metadata = { title: 'Pricing | Aime Christian Documentaries', description: 'Choose flexible documentary access and pay instantly with MTN MoMo, Airtel Money or card.', alternates: { canonical: '/pricing' } };
+
+export default function PricingPage() {
+  return (
+    <div>
+      <PageHeader
+        align="center"
+        eyebrow="MEMBERSHIP"
+        title="Stories worth staying for."
+        description="Pay with MTN MoMo, Airtel Money or card. Your access starts as soon as the payment is confirmed."
+      />
+      <PricingSection showHeading={false} />
+      <HowItWorks />
+    </div>
+  );
+}

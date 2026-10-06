@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { CircleAlert, LoaderCircle } from 'lucide-react';
 
 type Props = {
   docId: string;
@@ -47,8 +48,9 @@ export function StreamPlayer({ docId, poster, fallbackUrl }: Props) {
 
   if (error) {
     return (
-      <div className="flex h-full items-center justify-center text-red-300">
-        {error}
+      <div className="flex h-full flex-col items-center justify-center gap-3 bg-surface text-red-300">
+        <CircleAlert size={32} />
+        <p>{error}</p>
       </div>
     );
   }
@@ -69,8 +71,9 @@ export function StreamPlayer({ docId, poster, fallbackUrl }: Props) {
 
   if (!token) {
     return (
-      <div className="flex h-full items-center justify-center text-text-muted">
-        Loading player…
+      <div className="flex h-full flex-col items-center justify-center gap-3 bg-black text-text-muted">
+        <LoaderCircle size={32} className="animate-spin text-gold" />
+        <p>Loading player…</p>
       </div>
     );
   }

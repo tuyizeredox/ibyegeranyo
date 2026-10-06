@@ -1,7 +1,9 @@
 export const dynamic = 'force-dynamic';
 import { Metadata } from 'next';
 import { getAllDocumentaries } from '@/lib/db';
-import { DocumentaryCard } from '@/components/DocumentaryCard';
+import { getDocumentaryThumbnail } from '@/lib/thumbnails';
+import { PageHeader } from '@/components/PageHeader';
+import { DocumentaryLibrary, type LibraryItem } from '@/components/DocumentaryLibrary';
 
 export const metadata: Metadata = {
   title: 'Documentaries',
@@ -21,32 +23,29 @@ export const metadata: Metadata = {
 export default async function DocumentariesPage() {
   const documentaries = await getAllDocumentaries();
 
+  // Only plain card fields cross into the client-side library.
+  const items: LibraryItem[] = documentaries.map((doc) => ({
+    documentary: {
+      id: doc.id,
+      title: doc.title,
+      summary: doc.summary,
+      category: doc.category,
+      rating: doc.rating,
+      releaseDate: doc.releaseDate,
+      videoDuration: doc.videoDuration,
+    },
+    thumbnail: getDocumentaryThumbnail(doc),
+  }));
+
   return (
     <div className="min-h-screen">
-      <div className="container page-section">
-        <div className="mb-12 md:mb-16">
-          <h1 className="text-4xl md:text-5xl font-bold text-white mb-4">
-            Documentaries
-          </h1>
-          <p className="text-text-muted max-w-2xl">
-            Explore our complete collection of premium documentaries. Watch
-            compelling stories and investigations from Rwanda and beyond.
-          </p>
-        </div>
-
-        {documentaries.length === 0 ? (
-          <div className="text-center py-20">
-            <p className="text-text-muted text-lg">
-              No documentaries available yet.
-            </p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {documentaries.map((doc) => (
-              <DocumentaryCard key={doc.id} documentary={doc} />
-            ))}
-          </div>
-        )}
+      <PageHeader
+        eyebrow="OUR COLLECTION"
+        title="Documentaries"
+        description="Explore our complete collection of premium documentaries. Watch compelling stories and investigations from Rwanda and beyond."
+      />
+      <div className="container pb-[clamp(4.5rem,8vw,7.5rem)] pt-4">
+        <DocumentaryLibrary items={items} />
       </div>
     </div>
   );

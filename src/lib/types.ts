@@ -11,7 +11,7 @@ export interface User {
   selectedPlan: PlanType | null;
   amount: number | null;
   paymentId: string | null;
-  paymentStatus: 'none' | 'pending' | 'confirmed' | 'rejected';
+  paymentStatus: 'none' | 'pending' | 'confirmed' | 'rejected' | 'failed';
   paymentProofUrl: string | null;
   startDate: string | null;
   endDate: string | null;
@@ -48,14 +48,29 @@ export interface Documentary {
   metadata: Record<string, unknown>;
 }
 
+/** `manual` = legacy USSD + screenshot flow; the rest go through iTechPay. */
+export type PaymentMethod = 'manual' | 'mobile_money' | 'airtel_money' | 'card';
+
 export interface Payment {
+  /** For iTechPay payments this is also the `req_ref` sent to the gateway. */
   id: string;
   userId: string;
   phone: string;
   plan: PlanType;
+  /** Copied from PLANS on the server, never from the client. */
   amount: number;
+  currency?: 'RWF';
   documentaryId: string | null;
-  status: 'pending' | 'confirmed' | 'rejected';
+  /** `failed` = the gateway reported a failure, or it timed out unconfirmed. */
+  status: 'pending' | 'confirmed' | 'rejected' | 'failed';
+  /** Missing on payments created before automatic payments existed. */
+  method?: PaymentMethod;
+  /** iTechPay transaction id, or the Pesapal PCODE for card payments. */
+  gatewayTransactionId?: string | null;
+  /** Last status iTechPay reported, kept for support and audits. */
+  gatewayStatus?: string | null;
+  /** Set when iTechPay reports an amount that doesn't match `amount`. */
+  needsReview?: string | null;
   proofUrl: string | null;
   createdAt: string;
   confirmedAt: string | null;
