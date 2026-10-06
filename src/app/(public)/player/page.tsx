@@ -38,7 +38,13 @@ export default async function PlayerPage({
     Boolean(documentary.streamUid) &&
     documentary.streamStatus !== 'error' &&
     access.hasAccess;
-  const canPlay = access.hasAccess && Boolean(useStream || documentary.videoUrl);
+  // Prefer free HLS if encoding is ready
+  const hlsPlaylistUrl =
+    documentary.hlsPlaylistKey && documentary.encodingStatus === 'ready'
+      ? `/api/media/r2?key=${encodeURIComponent(documentary.hlsPlaylistKey)}`
+      : null;
+
+  const canPlay = access.hasAccess && Boolean(useStream || documentary.videoUrl || hlsPlaylistUrl);
   // The locked panel carries the page's h1; otherwise the title below does.
   const TitleTag = canPlay ? 'h1' : 'h2';
 
@@ -65,24 +71,12 @@ export default async function PlayerPage({
       <main className="container max-w-6xl py-8 md:py-12">
         {canPlay ? (
           <div className="video-container aspect-video rounded-2xl ring-1 ring-white/10 shadow-[0_40px_120px_-40px_rgba(0,0,0,.9)] md:rounded-3xl">
-            {useStream && documentary.streamUid ? (
-              <StreamPlayer
-                docId={documentary.id}
-                poster={documentary.thumbnailUrl}
-                fallbackUrl={documentary.videoUrl}
-              />
-            ) : documentary.videoUrl ? (
-              <video
-                controls
-                controlsList="nodownload"
-                disablePictureInPicture
-                className="w-full h-full"
-                poster={documentary.thumbnailUrl || undefined}
-              >
-                <source src={documentary.videoUrl} type="video/mp4" />
-                Your browser does not support video playback.
-              </video>
-            ) : null}
+            <StreamPlayer
+              docId={documentary.id}
+              poster={documentary.thumbnailUrl}
+              fallbackUrl={documentary.videoUrl}
+              hlsPlaylistUrl={hlsPlaylistUrl}
+            />
           </div>
         ) : (
           <div className="relative flex min-h-[26rem] items-center justify-center overflow-hidden rounded-2xl bg-surface ring-1 ring-white/10 md:aspect-video md:min-h-0 md:rounded-3xl">
@@ -132,10 +126,19 @@ export default async function PlayerPage({
                 {Math.floor(documentary.videoDuration / 60)} minutes
               </span>
             ) : null}
-            {documentary.streamStatus === 'processing' && (
+            {(documentary.encodingStatus === 'pending' || documentary.encodingStatus === 'processing') && (
               <span className="badge badge-warning">
                 <LoaderCircle size={12} className="animate-spin" />
                 Adaptive qualities encoding…
+              </span>
+            )}
+            {documentary.encodingStatus === 'ready' && (
+              <span className="badge badge-gold">Adaptive streaming ready</span>
+            )}
+            {documentary.streamStatus === 'processing' && (
+              <span className="badge badge-warning">
+                <LoaderCircle size={12} className="animate-spin" />
+                Stream encoding…
               </span>
             )}
           </div>

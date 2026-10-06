@@ -85,7 +85,13 @@ export function Footer() {
         </div>
 
         <div className="mt-14 flex flex-col-reverse items-start justify-between gap-5 border-t border-white/[0.06] pt-8 text-sm text-text-muted sm:flex-row sm:items-center">
-          <p>© {new Date().getFullYear()} Aime Christian Documentaries.</p>
+          <div className="flex flex-col gap-1.5">
+            <p>© {new Date().getFullYear()} Aime Christian Documentaries.</p>
+            <p>
+              Powered by{' '}
+              <span className="font-medium text-white/90">MEDIALINK AFRICA GROUP (MAG) LTD</span>
+            </p>
+          </div>
           <button
             type="button"
             onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
